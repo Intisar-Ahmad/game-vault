@@ -8,6 +8,7 @@ import type { LibraryGameItem } from "@/types/game";
 
 interface GameDetailModalProps {
   game: LibraryGameItem | null;
+  isAdmin: boolean;
   onClose: () => void;
   onUpdated: (updated: LibraryGameItem) => void;
   onDeleted: (id: number) => void;
@@ -15,6 +16,7 @@ interface GameDetailModalProps {
 
 export function GameDetailModal({
   game,
+  isAdmin,
   onClose,
   onUpdated,
   onDeleted,
@@ -27,7 +29,7 @@ export function GameDetailModal({
   if (!game) return null;
 
   async function handleRatingChange(newRating: number | null) {
-    if (!game) return;
+    if (!game || !isAdmin) return;
     const optimistic = { ...game, rating: newRating };
     onUpdated(optimistic);
 
@@ -39,7 +41,7 @@ export function GameDetailModal({
   }
 
   async function handleSaveNotes() {
-    if (!game) return;
+    if (!game || !isAdmin) return;
     setSavingNotes(true);
     try {
       const res = await fetch(`/api/library/${game.id}`, {
@@ -58,7 +60,7 @@ export function GameDetailModal({
   }
 
   async function handleDelete() {
-    if (!game) return;
+    if (!game || !isAdmin) return;
     if (!confirm(`Remove "${game.title}" from your library?`)) return;
     const res = await fetch(`/api/library/${game.id}`, { method: "DELETE" });
     if (res.ok) {
@@ -148,23 +150,26 @@ export function GameDetailModal({
               <div className="mt-4 flex flex-wrap items-center justify-between gap-4 rounded-xl border border-zinc-800/80 bg-zinc-900/50 px-4 py-3">
                 <div>
                   <p className="font-mono text-[10px] uppercase tracking-widest text-zinc-500">
-                    Your Rating
+                    Rating
                   </p>
                   <div className="mt-1">
                     <StarRating
                       value={game.rating}
                       onChange={handleRatingChange}
+                      readonly={!isAdmin}
                       size="lg"
                     />
                   </div>
                 </div>
 
-                <button
-                  onClick={handleDelete}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-rose-500/20 bg-rose-500/10 px-3 py-1.5 text-xs font-medium text-rose-400 hover:bg-rose-500/20 transition-colors cursor-pointer"
-                >
-                  <Trash2 className="h-3.5 w-3.5" /> Remove
-                </button>
+                {isAdmin && (
+                  <button
+                    onClick={handleDelete}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-rose-500/20 bg-rose-500/10 px-3 py-1.5 text-xs font-medium text-rose-400 hover:bg-rose-500/20 transition-colors cursor-pointer"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" /> Remove
+                  </button>
+                )}
               </div>
             </div>
           </div>
@@ -213,35 +218,48 @@ export function GameDetailModal({
           )}
 
           {/* Personal Notes */}
-          <div className="mt-6">
-            <div className="flex items-center justify-between">
-              <h3 className="font-mono text-xs uppercase tracking-widest text-zinc-500">
-                Personal Notes
-              </h3>
-              <button
-                onClick={handleSaveNotes}
-                disabled={savingNotes}
-                className="inline-flex items-center gap-1.5 rounded-lg bg-zinc-800 px-3 py-1 text-xs font-medium text-zinc-200 hover:bg-zinc-700 disabled:opacity-50 transition-colors cursor-pointer"
-              >
-                {savedToast ? (
-                  <>
-                    <Check className="h-3.5 w-3.5 text-emerald-400" /> Saved
-                  </>
-                ) : (
-                  <>
-                    <Save className="h-3.5 w-3.5" /> Save Notes
-                  </>
-                )}
-              </button>
+          {isAdmin ? (
+            <div className="mt-6">
+              <div className="flex items-center justify-between">
+                <h3 className="font-mono text-xs uppercase tracking-widest text-zinc-500">
+                  Personal Notes
+                </h3>
+                <button
+                  onClick={handleSaveNotes}
+                  disabled={savingNotes}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-zinc-800 px-3 py-1 text-xs font-medium text-zinc-200 hover:bg-zinc-700 disabled:opacity-50 transition-colors cursor-pointer"
+                >
+                  {savedToast ? (
+                    <>
+                      <Check className="h-3.5 w-3.5 text-emerald-400" /> Saved
+                    </>
+                  ) : (
+                    <>
+                      <Save className="h-3.5 w-3.5" /> Save Notes
+                    </>
+                  )}
+                </button>
+              </div>
+              <textarea
+                rows={3}
+                value={notes}
+                onChange={(e) => setNotes(e.target.value)}
+                placeholder="Write your thoughts, favorite moments, or why you rated it this way..."
+                className="mt-2 w-full rounded-xl border border-zinc-800 bg-zinc-950/80 p-3 text-sm text-zinc-200 placeholder-zinc-600 outline-none focus:border-emerald-500/50"
+              />
             </div>
-            <textarea
-              rows={3}
-              value={notes}
-              onChange={(e) => setNotes(e.target.value)}
-              placeholder="Write your thoughts, favorite moments, or why you rated it this way..."
-              className="mt-2 w-full rounded-xl border border-zinc-800 bg-zinc-950/80 p-3 text-sm text-zinc-200 placeholder-zinc-600 outline-none focus:border-emerald-500/50"
-            />
-          </div>
+          ) : (
+            game.notes && (
+              <div className="mt-6">
+                <h3 className="font-mono text-xs uppercase tracking-widest text-zinc-500">
+                  Notes
+                </h3>
+                <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-zinc-300">
+                  {game.notes}
+                </p>
+              </div>
+            )
+          )}
         </div>
       </div>
     </div>

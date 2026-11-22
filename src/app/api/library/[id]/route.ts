@@ -1,11 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { requireAdmin } from "@/lib/auth";
 
 export async function PATCH(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const unauthorized = await requireAdmin();
+    if (unauthorized) return unauthorized;
     const { id } = await params;
     const gameId = Number(id);
     const body = await req.json();
@@ -35,6 +38,8 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const unauthorized = await requireAdmin();
+    if (unauthorized) return unauthorized;
     const { id } = await params;
     await prisma.libraryGame.delete({
       where: { id: Number(id) },

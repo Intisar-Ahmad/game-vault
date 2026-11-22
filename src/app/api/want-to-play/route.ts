@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { requireAdmin } from "@/lib/auth";
 
 export async function GET() {
   try {
@@ -15,6 +16,8 @@ export async function GET() {
 
 export async function POST(req: NextRequest) {
   try {
+    const unauthorized = await requireAdmin();
+    if (unauthorized) return unauthorized;
     const body = await req.json();
 
     const game = await prisma.wantToPlay.create({

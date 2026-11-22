@@ -11,9 +11,12 @@ import {
   ArrowRight,
   Trash2,
   SlidersHorizontal,
+  Lock,
+  LogOut,
 } from "lucide-react";
 import { QuickAddModal } from "./QuickAddModal";
 import { GameDetailModal } from "./GameDetailModal";
+import { LoginModal } from "./LoginModal";
 import type { LibraryGameItem, WantToPlayItem } from "@/types/game";
 
 type Tab = "library" | "want-to-play";
@@ -25,6 +28,9 @@ export function VaultClient() {
   const [wantToPlay, setWantToPlay] = useState<WantToPlayItem[]>([]);
   const [loading, setLoading] = useState(true);
 
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [loginOpen, setLoginOpen] = useState(false);
+
   const [search, setSearch] = useState("");
   const [selectedGenre, setSelectedGenre] = useState<string>("all");
   const [sortBy, setSortBy] = useState<SortOption>("recent");
@@ -34,16 +40,19 @@ export function VaultClient() {
 
   async function fetchAll() {
     try {
-      const [libRes, wantRes] = await Promise.all([
+      const [libRes, wantRes, meRes] = await Promise.all([
         fetch("/api/library"),
         fetch("/api/want-to-play"),
+        fetch("/api/auth/me"),
       ]);
-      const [libData, wantData] = await Promise.all([
+      const [libData, wantData, meData] = await Promise.all([
         libRes.json(),
         wantRes.json(),
+        meRes.json(),
       ]);
       setLibrary(libData.games ?? []);
       setWantToPlay(wantData.games ?? []);
+      setIsAdmin(Boolean(meData.isAdmin));
     } finally {
       setLoading(false);
     }
@@ -53,23 +62,25 @@ export function VaultClient() {
     fetchAll();
   }, []);
 
-  // Global Ctrl+K / Cmd+K shortcut
+  // Global Ctrl+K / Cmd+K shortcut (only when logged in as admin)
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+        if (!isAdmin) return;
         e.preventDefault();
         setQuickAddOpen((prev) => !prev);
       }
       if (e.key === "Escape") {
         setQuickAddOpen(false);
         setSelectedGame(null);
+        setLoginOpen(false);
       }
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, []);
+  }, [isAdmin]);
 
-  // Unique genres from current library
+  // Unique genres from current tab
   const allGenres = useMemo(() => {
     const set = new Set<string>();
     const source = tab === "library" ? library : wantToPlay;
@@ -114,6 +125,7 @@ export function VaultClient() {
   }, [library]);
 
   async function handlePromoteToLibrary(item: WantToPlayItem) {
+    if (!isAdmin) return;
     const res = await fetch("/api/library", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -129,6 +141,7 @@ export function VaultClient() {
   }
 
   async function handleRemoveWant(id: number) {
+    if (!isAdmin) return;
     const res = await fetch(`/api/want-to-play/${id}`, { method: "DELETE" });
     if (res.ok) {
       setWantToPlay((prev) => prev.filter((g) => g.id !== id));
@@ -190,16 +203,41 @@ export function VaultClient() {
             </nav>
           </div>
 
-          <button
-            onClick={() => setQuickAddOpen(true)}
-            className="inline-flex items-center gap-2 rounded-xl bg-emerald-500 px-3.5 py-2 text-xs font-semibold text-zinc-950 hover:bg-emerald-400 transition-all shadow-[0_0_20px_rgba(16,185,129,0.25)] cursor-pointer"
-          >
-            <Plus className="h-4 w-4" />
-            <span>Add Game</span>
-            <kbd className="hidden sm:inline-block rounded bg-black/20 px-1.5 py-0.5 font-mono text-[10px] text-zinc-950/80">
-              Ctrl K
-            </kbd>
-          </button>
+          <div className="flex items-center gap-2">
+            {isAdmin ? (
+              <>
+                <button
+                  onClick={() => setQuickAddOpen(true)}
+                  className="inline-flex items-center gap-2 rounded-xl bg-emerald-500 px-3.5 py-2 text-xs font-semibold text-zinc-950 hover:bg-emerald-400 transition-all shadow-[0_0_20px_rgba(16,185,129,0.25)] cursor-pointer"
+                >
+                  <Plus className="h-4 w-4" />
+                  <span>Add Game</span>
+                  <kbd className="hidden sm:inline-block rounded bg-black/20 px-1.5 py-0.5 font-mono text-[10px] text-zinc-950/80">
+                    Ctrl K
+                  </kbd>
+                </button>
+                <button
+                  onClick={async () => {
+                    await fetch("/api/auth/logout", { method: "POST" });
+                    setIsAdmin(false);
+                  }}
+                  title="Lock Vault"
+                  className="rounded-xl border border-zinc-800 bg-zinc-900/70 p-2 text-zinc-400 hover:text-zinc-100 transition-colors cursor-pointer"
+                >
+                  <LogOut className="h-4 w-4" />
+                </button>
+              </>
+            ) : (
+              <button
+                onClick={() => setLoginOpen(true)}
+                title="Owner Login"
+                className="inline-flex items-center gap-1.5 rounded-xl border border-zinc-800 bg-zinc-900/70 px-3 py-2 text-xs font-medium text-zinc-400 hover:border-zinc-700 hover:text-zinc-100 transition-colors cursor-pointer"
+              >
+                <Lock className="h-3.5 w-3.5" />
+                <span>Login</span>
+              </button>
+            )}
+          </div>
         </div>
       </header>
 
@@ -285,7 +323,7 @@ export function VaultClient() {
                   ? "Your vault is empty."
                   : "No games match your filters."}
               </p>
-              {library.length === 0 && (
+              {library.length === 0 && isAdmin && (
                 <button
                   onClick={() => setQuickAddOpen(true)}
                   className="mt-4 inline-flex items-center gap-1.5 rounded-xl bg-emerald-500 px-4 py-2 text-xs font-semibold text-zinc-950 hover:bg-emerald-400 cursor-pointer"
@@ -346,12 +384,14 @@ export function VaultClient() {
             <p className="mt-3 text-sm font-medium text-zinc-300">
               Nothing in Want to Play yet.
             </p>
-            <button
-              onClick={() => setQuickAddOpen(true)}
-              className="mt-4 inline-flex items-center gap-1.5 rounded-xl border border-zinc-700 bg-zinc-900 px-4 py-2 text-xs font-medium text-zinc-200 hover:border-zinc-500 cursor-pointer"
-            >
-              <Plus className="h-4 w-4" /> Queue a game
-            </button>
+            {isAdmin && (
+              <button
+                onClick={() => setQuickAddOpen(true)}
+                className="mt-4 inline-flex items-center gap-1.5 rounded-xl border border-zinc-700 bg-zinc-900 px-4 py-2 text-xs font-medium text-zinc-200 hover:border-zinc-500 cursor-pointer"
+              >
+                <Plus className="h-4 w-4" /> Queue a game
+              </button>
+            )}
           </div>
         ) : (
           <div className="mt-8 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-5">
@@ -386,21 +426,23 @@ export function VaultClient() {
                     </p>
                   </div>
 
-                  <div className="mt-3 flex items-center gap-1.5">
-                    <button
-                      onClick={() => handlePromoteToLibrary(game)}
-                      className="flex-1 inline-flex items-center justify-center gap-1 rounded-lg bg-emerald-500/15 border border-emerald-500/30 py-1.5 text-[11px] font-semibold text-emerald-400 hover:bg-emerald-500 hover:text-zinc-950 transition-colors cursor-pointer"
-                    >
-                      Played <ArrowRight className="h-3 w-3" />
-                    </button>
-                    <button
-                      onClick={() => handleRemoveWant(game.id)}
-                      title="Remove"
-                      className="rounded-lg border border-zinc-800 p-1.5 text-zinc-500 hover:border-rose-500/40 hover:text-rose-400 transition-colors cursor-pointer"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
-                  </div>
+                  {isAdmin && (
+                    <div className="mt-3 flex items-center gap-1.5">
+                      <button
+                        onClick={() => handlePromoteToLibrary(game)}
+                        className="flex-1 inline-flex items-center justify-center gap-1 rounded-lg bg-emerald-500/15 border border-emerald-500/30 py-1.5 text-[11px] font-semibold text-emerald-400 hover:bg-emerald-500 hover:text-zinc-950 transition-colors cursor-pointer"
+                      >
+                        Played <ArrowRight className="h-3 w-3" />
+                      </button>
+                      <button
+                        onClick={() => handleRemoveWant(game.id)}
+                        title="Remove"
+                        className="rounded-lg border border-zinc-800 p-1.5 text-zinc-500 hover:border-rose-500/40 hover:text-rose-400 transition-colors cursor-pointer"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  )}
                 </div>
               </div>
             ))}
@@ -418,6 +460,7 @@ export function VaultClient() {
       <GameDetailModal
         key={selectedGame?.id ?? "none"}
         game={selectedGame}
+        isAdmin={isAdmin}
         onClose={() => setSelectedGame(null)}
         onUpdated={(updated) => {
           setSelectedGame(updated);
@@ -428,6 +471,12 @@ export function VaultClient() {
         onDeleted={(id) => {
           setLibrary((prev) => prev.filter((g) => g.id !== id));
         }}
+      />
+
+      <LoginModal
+        open={loginOpen}
+        onClose={() => setLoginOpen(false)}
+        onSuccess={() => setIsAdmin(true)}
       />
     </div>
   );
