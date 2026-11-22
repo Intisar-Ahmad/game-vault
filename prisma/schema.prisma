@@ -1,0 +1,77 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model LibraryGame {
+  id             Int            @id @default(autoincrement())
+  igdbId         Int            @unique
+  title          String
+  slug           String         @unique
+  releaseYear    Int?
+  summary        String?
+  coverUrl       String?
+  backdropUrl    String?
+  screenshots    String[]
+  genres         String[]
+  themes         String[]
+  similarIgdbIds Int[]
+
+  rating         Float?         // null = unrated; 0.0 to 5.0 in 0.5 steps
+  notes          String?
+  playedAt       DateTime       @default(now())
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  playlists      PlaylistGame[]
+}
+
+model WantToPlay {
+  id             Int      @id @default(autoincrement())
+  igdbId         Int      @unique
+  title          String
+  slug           String   @unique
+  releaseYear    Int?
+  summary        String?
+  coverUrl       String?
+  backdropUrl    String?
+  screenshots    String[]
+  genres         String[]
+  themes         String[]
+  similarIgdbIds Int[]
+
+  note           String?
+  createdAt      DateTime @default(now())
+}
+
+model Playlist {
+  id          Int            @id @default(autoincrement())
+  name        String
+  slug        String         @unique
+  description String?
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  games       PlaylistGame[]
+}
+
+model PlaylistGame {
+  playlistId Int
+  gameId     Int
+  position   Int      @default(0)
+  addedAt    DateTime @default(now())
+
+  playlist   Playlist    @relation(fields: [playlistId], references: [id], onDelete: Cascade)
+  game       LibraryGame @relation(fields: [gameId], references: [id], onDelete: Cascade)
+
+  @@id([playlistId, gameId])
+}
+
+model DismissedGame {
+  igdbId    Int      @id
+  createdAt DateTime @default(now())
+}
