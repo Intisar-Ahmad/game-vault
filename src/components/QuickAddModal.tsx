@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Image from "next/image";
 import { Search, X, Plus, Bookmark, Check, Loader2, Gamepad2 } from "lucide-react";
 import type { IgdbSearchResult } from "@/types/game";
@@ -15,8 +15,15 @@ export function QuickAddModal({ open, onClose, onAdded }: QuickAddModalProps) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<IgdbSearchResult[]>([]);
   const [loading, setLoading] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(false);
+  const [nextOffset, setNextOffset] = useState(0);
   const [busyId, setBusyId] = useState<number | null>(null);
+
   const inputRef = useRef<HTMLInputElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const sentinelRef = useRef<HTMLDivElement>(null);
+  const activeQueryRef = useRef("");
 
   useEffect(() => {
     if (open) {
@@ -24,32 +31,93 @@ export function QuickAddModal({ open, onClose, onAdded }: QuickAddModalProps) {
     } else {
       setQuery("");
       setResults([]);
+      setHasMore(false);
+      setNextOffset(0);
     }
   }, [open]);
 
+  // Initial search on query change
   useEffect(() => {
     if (!open) return;
     const trimmed = query.trim();
+    activeQueryRef.current = trimmed;
+
     if (trimmed.length < 2) {
       setResults([]);
+      setHasMore(false);
+      setNextOffset(0);
       return;
     }
 
     const timer = setTimeout(async () => {
       setLoading(true);
       try {
-        const res = await fetch(`/api/igdb/search?q=${encodeURIComponent(trimmed)}`);
+        const res = await fetch(
+          `/api/igdb/search?q=${encodeURIComponent(trimmed)}&offset=0`
+        );
         const data = await res.json();
+        if (activeQueryRef.current !== trimmed) return;
+
         setResults(data.results ?? []);
+        setHasMore(Boolean(data.hasMore));
+        setNextOffset(data.nextOffset ?? 0);
+        if (listRef.current) listRef.current.scrollTop = 0;
       } catch (err) {
         console.error(err);
       } finally {
-        setLoading(false);
+        if (activeQueryRef.current === trimmed) setLoading(false);
       }
     }, 300);
 
     return () => clearTimeout(timer);
   }, [query, open]);
+
+  // Load next batch when scrolling down
+  const loadMore = useCallback(async () => {
+    const trimmed = activeQueryRef.current;
+    if (loading || loadingMore || !hasMore || trimmed.length < 2) return;
+
+    setLoadingMore(true);
+    try {
+      const res = await fetch(
+        `/api/igdb/search?q=${encodeURIComponent(trimmed)}&offset=${nextOffset}`
+      );
+      const data = await res.json();
+      if (activeQueryRef.current !== trimmed) return;
+
+      const incoming: IgdbSearchResult[] = data.results ?? [];
+      setResults((prev) => {
+        const seen = new Set(prev.map((item) => item.igdbId));
+        const unique = incoming.filter((item) => !seen.has(item.igdbId));
+        return [...prev, ...unique];
+      });
+      setHasMore(Boolean(data.hasMore));
+      setNextOffset(data.nextOffset ?? nextOffset + incoming.length);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [loading, loadingMore, hasMore, nextOffset]);
+
+  // Trigger loadMore when bottom sentinel enters scroll viewport
+  useEffect(() => {
+    const sentinel = sentinelRef.current;
+    const root = listRef.current;
+    if (!open || !sentinel || !root || !hasMore) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting) {
+          loadMore();
+        }
+      },
+      { root, rootMargin: "140px" }
+    );
+
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [open, hasMore, loadMore]);
 
   async function handleAdd(game: IgdbSearchResult, target: "library" | "want-to-play") {
     setBusyId(game.igdbId);
@@ -99,25 +167,28 @@ export function QuickAddModal({ open, onClose, onAdded }: QuickAddModalProps) {
             type="text"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search IGDB to add games... (e.g. Resident Evil 4, Elden Ring)"
+            placeholder="Search IGDB to add games... (e.g. Resident Evil 4, Silksong)"
             className="w-full bg-transparent text-sm text-zinc-100 placeholder-zinc-500 outline-none"
           />
           {loading && <Loader2 className="h-4 w-4 animate-spin text-zinc-400" />}
           <button
             onClick={onClose}
-            className="rounded-lg p-1 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200 transition-colors"
+            className="rounded-lg p-1 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200 transition-colors cursor-pointer"
           >
             <X className="h-4 w-4" />
           </button>
         </div>
 
-        {/* Results List */}
-        <div className="max-h-[60vh] overflow-y-auto divide-y divide-zinc-800/60">
+        {/* Scrollable Results List */}
+        <div
+          ref={listRef}
+          className="max-h-[60vh] overflow-y-auto divide-y divide-zinc-800/60"
+        >
           {!loading && query.trim().length < 2 && (
             <div className="py-14 text-center text-sm text-zinc-500">
               Type at least 2 characters to search IGDB.
               <p className="mt-1 font-mono text-xs text-zinc-600">
-                Tip: Keep typing after adding—modal stays open for fast bulk-adding.
+                Tip: Scroll down to load more matches; modal stays open for fast bulk-adding.
               </p>
             </div>
           )}
@@ -205,6 +276,22 @@ export function QuickAddModal({ open, onClose, onAdded }: QuickAddModalProps) {
               </div>
             );
           })}
+
+          {/* Infinite Scroll Sentinel */}
+          {results.length > 0 && (
+            <div ref={sentinelRef} className="py-4 text-center font-mono text-xs text-zinc-500">
+              {loadingMore ? (
+                <span className="inline-flex items-center gap-2">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin text-emerald-400" />
+                  Loading more games...
+                </span>
+              ) : hasMore ? (
+                "Scroll for more"
+              ) : (
+                "End of results"
+              )}
+            </div>
+          )}
         </div>
       </div>
     </div>

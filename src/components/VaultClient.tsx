@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Image from "next/image";
 import {
   Search,
@@ -13,6 +13,7 @@ import {
   SlidersHorizontal,
   Lock,
   LogOut,
+  Loader2,
 } from "lucide-react";
 import { QuickAddModal } from "./QuickAddModal";
 import { GameDetailModal } from "./GameDetailModal";
@@ -22,45 +23,181 @@ import type { LibraryGameItem, WantToPlayItem } from "@/types/game";
 type Tab = "library" | "want-to-play";
 type SortOption = "recent" | "rating" | "year" | "title";
 
+const PAGE_LIMIT = 24;
+
 export function VaultClient() {
   const [tab, setTab] = useState<Tab>("library");
+
+  // Library state
   const [library, setLibrary] = useState<LibraryGameItem[]>([]);
+  const [libTotal, setLibTotal] = useState(0);
+  const [libFilteredTotal, setLibFilteredTotal] = useState(0);
+  const [libAvgRating, setLibAvgRating] = useState<string | null>(null);
+  const [libGenres, setLibGenres] = useState<string[]>([]);
+  const [libPage, setLibPage] = useState(1);
+  const [libHasMore, setLibHasMore] = useState(false);
+
+  // Want to Play state
   const [wantToPlay, setWantToPlay] = useState<WantToPlayItem[]>([]);
+  const [wantTotal, setWantTotal] = useState(0);
+  const [wantFilteredTotal, setWantFilteredTotal] = useState(0);
+  const [wantGenres, setWantGenres] = useState<string[]>([]);
+  const [wantPage, setWantPage] = useState(1);
+  const [wantHasMore, setWantHasMore] = useState(false);
+
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
 
   const [isAdmin, setIsAdmin] = useState(false);
   const [loginOpen, setLoginOpen] = useState(false);
 
+  // Filters
   const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [selectedGenre, setSelectedGenre] = useState<string>("all");
   const [sortBy, setSortBy] = useState<SortOption>("recent");
 
   const [quickAddOpen, setQuickAddOpen] = useState(false);
   const [selectedGame, setSelectedGame] = useState<LibraryGameItem | null>(null);
 
-  async function fetchAll() {
-    try {
-      const [libRes, wantRes, meRes] = await Promise.all([
-        fetch("/api/library"),
-        fetch("/api/want-to-play"),
-        fetch("/api/auth/me"),
-      ]);
-      const [libData, wantData, meData] = await Promise.all([
-        libRes.json(),
-        wantRes.json(),
-        meRes.json(),
-      ]);
-      setLibrary(libData.games ?? []);
-      setWantToPlay(wantData.games ?? []);
-      setIsAdmin(Boolean(meData.isAdmin));
-    } finally {
-      setLoading(false);
-    }
-  }
+  const gridSentinelRef = useRef<HTMLDivElement>(null);
 
+  // Debounce local search input so Postgres isn't hit on every keystroke
   useEffect(() => {
-    fetchAll();
+    const t = setTimeout(() => setDebouncedSearch(search.trim()), 250);
+    return () => clearTimeout(t);
+  }, [search]);
+
+  // Check auth status on mount
+  useEffect(() => {
+    fetch("/api/auth/me")
+      .then((r) => r.json())
+      .then((d) => setIsAdmin(Boolean(d.isAdmin)))
+      .catch(() => {});
   }, []);
+
+  const fetchLibraryPage = useCallback(
+    async (pageNum: number, append: boolean) => {
+      if (append) setLoadingMore(true);
+      else setLoading(true);
+
+      try {
+        const params = new URLSearchParams({
+          page: String(pageNum),
+          limit: String(PAGE_LIMIT),
+          q: debouncedSearch,
+          genre: selectedGenre,
+          sort: sortBy,
+        });
+        const res = await fetch(`/api/library?${params.toString()}`);
+        const data = await res.json();
+
+        const incoming: LibraryGameItem[] = data.games ?? [];
+        setLibrary((prev) => (append ? [...prev, ...incoming] : incoming));
+        setLibTotal(data.totalCount ?? 0);
+        setLibFilteredTotal(data.filteredCount ?? 0);
+        setLibAvgRating(data.avgRating ?? null);
+        setLibGenres(data.genres ?? []);
+        setLibHasMore(Boolean(data.hasMore));
+        setLibPage(pageNum);
+      } finally {
+        setLoading(false);
+        setLoadingMore(false);
+      }
+    },
+    [debouncedSearch, selectedGenre, sortBy]
+  );
+
+  const fetchWantPage = useCallback(
+    async (pageNum: number, append: boolean) => {
+      if (append) setLoadingMore(true);
+      else setLoading(true);
+
+      try {
+        const params = new URLSearchParams({
+          page: String(pageNum),
+          limit: String(PAGE_LIMIT),
+          q: debouncedSearch,
+          genre: selectedGenre,
+        });
+        const res = await fetch(`/api/want-to-play?${params.toString()}`);
+        const data = await res.json();
+
+        const incoming: WantToPlayItem[] = data.games ?? [];
+        setWantToPlay((prev) => (append ? [...prev, ...incoming] : incoming));
+        setWantTotal(data.totalCount ?? 0);
+        setWantFilteredTotal(data.filteredCount ?? 0);
+        setWantGenres(data.genres ?? []);
+        setWantHasMore(Boolean(data.hasMore));
+        setWantPage(pageNum);
+      } finally {
+        setLoading(false);
+        setLoadingMore(false);
+      }
+    },
+    [debouncedSearch, selectedGenre]
+  );
+
+  // Initial load of counts + reload active tab whenever filters/sort change
+  useEffect(() => {
+    if (tab === "library") {
+      fetchLibraryPage(1, false);
+    } else {
+      fetchWantPage(1, false);
+    }
+  }, [tab, fetchLibraryPage, fetchWantPage]);
+
+  // Fetch initial badge count for the inactive tab once on mount
+  useEffect(() => {
+    fetch("/api/want-to-play?page=1&limit=1")
+      .then((r) => r.json())
+      .then((d) => setWantTotal(d.totalCount ?? 0))
+      .catch(() => {});
+  }, []);
+
+  const refreshCountsAndActive = useCallback(() => {
+    fetchLibraryPage(1, false);
+    fetch("/api/want-to-play?page=1&limit=1")
+      .then((r) => r.json())
+      .then((d) => setWantTotal(d.totalCount ?? 0))
+      .catch(() => {});
+    if (tab === "want-to-play") {
+      fetchWantPage(1, false);
+    }
+  }, [tab, fetchLibraryPage, fetchWantPage]);
+
+  // Infinite scroll observer for main grid
+  useEffect(() => {
+    const sentinel = gridSentinelRef.current;
+    const hasMore = tab === "library" ? libHasMore : wantHasMore;
+    if (!sentinel || !hasMore || loading || loadingMore) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting) {
+          if (tab === "library") {
+            fetchLibraryPage(libPage + 1, true);
+          } else {
+            fetchWantPage(wantPage + 1, true);
+          }
+        }
+      },
+      { rootMargin: "300px" }
+    );
+
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [
+    tab,
+    libHasMore,
+    wantHasMore,
+    libPage,
+    wantPage,
+    loading,
+    loadingMore,
+    fetchLibraryPage,
+    fetchWantPage,
+  ]);
 
   // Global Ctrl+K / Cmd+K shortcut (only when logged in as admin)
   useEffect(() => {
@@ -80,50 +217,6 @@ export function VaultClient() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [isAdmin]);
 
-  // Unique genres from current tab
-  const allGenres = useMemo(() => {
-    const set = new Set<string>();
-    const source = tab === "library" ? library : wantToPlay;
-    source.forEach((g) => g.genres.forEach((genre) => set.add(genre)));
-    return Array.from(set).sort();
-  }, [library, wantToPlay, tab]);
-
-  // Filtered & sorted Library
-  const filteredLibrary = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return library
-      .filter((g) => {
-        const matchesSearch = !q || g.title.toLowerCase().includes(q);
-        const matchesGenre =
-          selectedGenre === "all" || g.genres.includes(selectedGenre);
-        return matchesSearch && matchesGenre;
-      })
-      .sort((a, b) => {
-        if (sortBy === "rating") return (b.rating ?? -1) - (a.rating ?? -1);
-        if (sortBy === "year") return (b.releaseYear ?? 0) - (a.releaseYear ?? 0);
-        if (sortBy === "title") return a.title.localeCompare(b.title);
-        return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
-      });
-  }, [library, search, selectedGenre, sortBy]);
-
-  // Filtered Want to Play
-  const filteredWant = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return wantToPlay.filter((g) => {
-      const matchesSearch = !q || g.title.toLowerCase().includes(q);
-      const matchesGenre =
-        selectedGenre === "all" || g.genres.includes(selectedGenre);
-      return matchesSearch && matchesGenre;
-    });
-  }, [wantToPlay, search, selectedGenre]);
-
-  const avgRating = useMemo(() => {
-    const rated = library.filter((g) => g.rating !== null);
-    if (rated.length === 0) return null;
-    const sum = rated.reduce((acc, g) => acc + (g.rating ?? 0), 0);
-    return (sum / rated.length).toFixed(2);
-  }, [library]);
-
   async function handlePromoteToLibrary(item: WantToPlayItem) {
     if (!isAdmin) return;
     const res = await fetch("/api/library", {
@@ -134,9 +227,10 @@ export function VaultClient() {
     if (res.ok) {
       const { game } = await res.json();
       setWantToPlay((prev) => prev.filter((g) => g.id !== item.id));
-      setLibrary((prev) => [game, ...prev]);
+      setWantTotal((prev) => Math.max(0, prev - 1));
       setTab("library");
       setSelectedGame(game);
+      fetchLibraryPage(1, false);
     }
   }
 
@@ -145,8 +239,15 @@ export function VaultClient() {
     const res = await fetch(`/api/want-to-play/${id}`, { method: "DELETE" });
     if (res.ok) {
       setWantToPlay((prev) => prev.filter((g) => g.id !== id));
+      setWantTotal((prev) => Math.max(0, prev - 1));
+      setWantFilteredTotal((prev) => Math.max(0, prev - 1));
     }
   }
+
+  const allGenres = tab === "library" ? libGenres : wantGenres;
+  const activeHasMore = tab === "library" ? libHasMore : wantHasMore;
+  const activeFilteredCount = tab === "library" ? libFilteredTotal : wantFilteredTotal;
+  const activeLoadedCount = tab === "library" ? library.length : wantToPlay.length;
 
   return (
     <div className="min-h-screen bg-[#060609] text-zinc-100">
@@ -180,7 +281,7 @@ export function VaultClient() {
               >
                 Library
                 <span className="ml-1.5 font-mono text-[11px] text-zinc-500">
-                  {library.length}
+                  {libTotal}
                 </span>
               </button>
               <button
@@ -197,7 +298,7 @@ export function VaultClient() {
                 <Bookmark className="h-3.5 w-3.5 text-amber-400" />
                 Want to Play
                 <span className="font-mono text-[11px] text-zinc-500">
-                  {wantToPlay.length}
+                  {wantTotal}
                 </span>
               </button>
             </nav>
@@ -251,11 +352,19 @@ export function VaultClient() {
             <p className="mt-1 font-mono text-xs text-zinc-500">
               {tab === "library" ? (
                 <>
-                  {library.length} {library.length === 1 ? "title" : "titles"} logged
-                  {avgRating && <> · Avg Rating {avgRating} ★</>}
+                  {libTotal} {libTotal === 1 ? "title" : "titles"} logged
+                  {libAvgRating && <> · Avg Rating {libAvgRating} ★</>}
+                  {activeFilteredCount !== libTotal && (
+                    <> · Showing {activeFilteredCount} filtered</>
+                  )}
                 </>
               ) : (
-                <>Separate backlog · {wantToPlay.length} queued</>
+                <>
+                  Separate backlog · {wantTotal} queued
+                  {activeFilteredCount !== wantTotal && (
+                    <> · Showing {activeFilteredCount} filtered</>
+                  )}
+                </>
               )}
             </p>
           </div>
@@ -315,15 +424,15 @@ export function VaultClient() {
             ))}
           </div>
         ) : tab === "library" ? (
-          filteredLibrary.length === 0 ? (
+          library.length === 0 ? (
             <div className="mt-16 flex flex-col items-center justify-center rounded-2xl border border-dashed border-zinc-800 bg-zinc-950/50 py-20 text-center">
               <Gamepad2 className="h-10 w-10 text-zinc-700" />
               <p className="mt-3 text-sm font-medium text-zinc-300">
-                {library.length === 0
+                {libTotal === 0
                   ? "Your vault is empty."
                   : "No games match your filters."}
               </p>
-              {library.length === 0 && isAdmin && (
+              {libTotal === 0 && isAdmin && (
                 <button
                   onClick={() => setQuickAddOpen(true)}
                   className="mt-4 inline-flex items-center gap-1.5 rounded-xl bg-emerald-500 px-4 py-2 text-xs font-semibold text-zinc-950 hover:bg-emerald-400 cursor-pointer"
@@ -334,7 +443,7 @@ export function VaultClient() {
             </div>
           ) : (
             <div className="mt-8 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-5">
-              {filteredLibrary.map((game) => (
+              {library.map((game) => (
                 <button
                   key={game.id}
                   type="button"
@@ -378,13 +487,15 @@ export function VaultClient() {
               ))}
             </div>
           )
-        ) : filteredWant.length === 0 ? (
+        ) : wantToPlay.length === 0 ? (
           <div className="mt-16 flex flex-col items-center justify-center rounded-2xl border border-dashed border-zinc-800 bg-zinc-950/50 py-20 text-center">
             <Bookmark className="h-10 w-10 text-zinc-700" />
             <p className="mt-3 text-sm font-medium text-zinc-300">
-              Nothing in Want to Play yet.
+              {wantTotal === 0
+                ? "Nothing in Want to Play yet."
+                : "No queued games match your filters."}
             </p>
-            {isAdmin && (
+            {wantTotal === 0 && isAdmin && (
               <button
                 onClick={() => setQuickAddOpen(true)}
                 className="mt-4 inline-flex items-center gap-1.5 rounded-xl border border-zinc-700 bg-zinc-900 px-4 py-2 text-xs font-medium text-zinc-200 hover:border-zinc-500 cursor-pointer"
@@ -395,7 +506,7 @@ export function VaultClient() {
           </div>
         ) : (
           <div className="mt-8 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-5">
-            {filteredWant.map((game) => (
+            {wantToPlay.map((game) => (
               <div
                 key={game.id}
                 className="group flex flex-col rounded-xl overflow-hidden border border-zinc-800/80 bg-zinc-950"
@@ -448,13 +559,44 @@ export function VaultClient() {
             ))}
           </div>
         )}
+
+        {/* Infinite Scroll Sentinel & Footer Status */}
+        {!loading && activeLoadedCount > 0 && (
+          <div
+            ref={gridSentinelRef}
+            className="mt-10 flex flex-col items-center justify-center py-6 font-mono text-xs text-zinc-500"
+          >
+            {loadingMore ? (
+              <span className="inline-flex items-center gap-2 text-zinc-400">
+                <Loader2 className="h-4 w-4 animate-spin text-emerald-400" />
+                Loading more games...
+              </span>
+            ) : activeHasMore ? (
+              <button
+                type="button"
+                onClick={() =>
+                  tab === "library"
+                    ? fetchLibraryPage(libPage + 1, true)
+                    : fetchWantPage(wantPage + 1, true)
+                }
+                className="rounded-xl border border-zinc-800 bg-zinc-900/70 px-4 py-2 text-xs text-zinc-300 hover:border-zinc-700 hover:text-white transition-colors cursor-pointer"
+              >
+                Load more ({activeLoadedCount} of {activeFilteredCount})
+              </button>
+            ) : (
+              <span>
+                Showing all {activeLoadedCount} of {activeFilteredCount}
+              </span>
+            )}
+          </div>
+        )}
       </main>
 
       {/* Modals */}
       <QuickAddModal
         open={quickAddOpen}
         onClose={() => setQuickAddOpen(false)}
-        onAdded={fetchAll}
+        onAdded={refreshCountsAndActive}
       />
 
       <GameDetailModal
@@ -467,9 +609,16 @@ export function VaultClient() {
           setLibrary((prev) =>
             prev.map((g) => (g.id === updated.id ? updated : g))
           );
+          // Re-sync average rating in header
+          fetch("/api/library?page=1&limit=1")
+            .then((r) => r.json())
+            .then((d) => setLibAvgRating(d.avgRating ?? null))
+            .catch(() => {});
         }}
         onDeleted={(id) => {
           setLibrary((prev) => prev.filter((g) => g.id !== id));
+          setLibTotal((prev) => Math.max(0, prev - 1));
+          setLibFilteredTotal((prev) => Math.max(0, prev - 1));
         }}
       />
 

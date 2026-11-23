@@ -16,25 +16,70 @@ interface RawIgdbGame {
   similar_games?: number[];
 }
 
+const PAGE_SIZE = 20;
+
 export async function GET(req: NextRequest) {
   const q = req.nextUrl.searchParams.get("q")?.trim();
+  const offset = Math.max(0, Number(req.nextUrl.searchParams.get("offset") ?? "0") || 0);
 
   if (!q || q.length < 2) {
-    return NextResponse.json({ results: [] });
+    return NextResponse.json({ results: [], hasMore: false, nextOffset: 0 });
   }
 
   try {
     const safeQuery = q.replace(/"/g, '\\"');
-    const igdbBody = `
-      search "${safeQuery}";
-      fields name, slug, first_release_date, summary,
-             cover.image_id, screenshots.image_id, artworks.image_id,
-             genres.name, themes.name, similar_games;
-      where version_parent = null;
-      limit 12;
-    `;
+    let rawGames: RawIgdbGame[] = [];
 
-    const rawGames = await igdbQuery<RawIgdbGame>("games", igdbBody);
+    if (offset === 0) {
+      // First batch merges substring title matches + IGDB relevance search so subtitles always surface first
+      const [nameHits, searchHits] = await Promise.all([
+        igdbQuery<RawIgdbGame>(
+          "games",
+          `
+            fields name, slug, first_release_date, summary,
+                   cover.image_id, screenshots.image_id, artworks.image_id,
+                   genres.name, themes.name, similar_games;
+            where name ~ *"${safeQuery}"* & version_parent = null;
+            sort total_rating_count desc;
+            limit 15;
+          `
+        ),
+        igdbQuery<RawIgdbGame>(
+          "games",
+          `
+            search "${safeQuery}";
+            fields name, slug, first_release_date, summary,
+                   cover.image_id, screenshots.image_id, artworks.image_id,
+                   genres.name, themes.name, similar_games;
+            where version_parent = null;
+            limit ${PAGE_SIZE};
+          `
+        ),
+      ]);
+
+      const mergedMap = new Map<number, RawIgdbGame>();
+      for (const g of [...nameHits, ...searchHits]) {
+        if (!mergedMap.has(g.id)) {
+          mergedMap.set(g.id, g);
+        }
+      }
+      rawGames = Array.from(mergedMap.values()).slice(0, PAGE_SIZE);
+    } else {
+      // Subsequent scroll pages paginate directly through IGDB
+      rawGames = await igdbQuery<RawIgdbGame>(
+        "games",
+        `
+          search "${safeQuery}";
+          fields name, slug, first_release_date, summary,
+                 cover.image_id, screenshots.image_id, artworks.image_id,
+                 genres.name, themes.name, similar_games;
+          where version_parent = null;
+          limit ${PAGE_SIZE};
+          offset ${offset};
+        `
+      );
+    }
+
     const ids = rawGames.map((g) => g.id);
 
     const [existingLibrary, existingWantToPlay] = await Promise.all([
@@ -78,7 +123,13 @@ export async function GET(req: NextRequest) {
       };
     });
 
-    return NextResponse.json({ results });
+    const hasMore = rawGames.length >= PAGE_SIZE;
+
+    return NextResponse.json({
+      results,
+      hasMore,
+      nextOffset: offset + rawGames.length,
+    });
   } catch (err) {
     console.error("IGDB search error:", err);
     return NextResponse.json(
